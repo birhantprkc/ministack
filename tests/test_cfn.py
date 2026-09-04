@@ -13514,7 +13514,7 @@ def test_cfn_lambda_permission_update_replaces_the_statement(cfn, lam):
         assert _wait_stack(cfn, stack_name)["StackStatus"] == "UPDATE_COMPLETE"
         statements = _lambda_policy_statements(lam, fn_name)
         assert len(statements) == 1
-        assert statements[0]["Sid"] == "Perm"
+        assert statements[0]["Sid"].startswith(f"{stack_name}-Perm-")
         assert "events.amazonaws.com" in json.dumps(statements[0]["Principal"])
         assert statements[0]["Condition"]["ArnLike"]["AWS:SourceArn"].endswith(f"rule/cfn-perm-{uid}")
     finally:
@@ -13545,7 +13545,9 @@ def test_cfn_lambda_permission_delete_removes_the_statement_it_added(cfn, lam):
         cfn.create_stack(StackName=stack_name, TemplateBody=template)
         stack = _wait_stack(cfn, stack_name)
         assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
-        assert {s["Sid"] for s in _lambda_policy_statements(lam, fn_name)} == {"kept", "Perm"}
+        sids = {s["Sid"] for s in _lambda_policy_statements(lam, fn_name)}
+        assert "kept" in sids and len(sids) == 2
+        assert any(s.startswith(f"{stack_name}-Perm-") for s in sids)
 
         cfn.delete_stack(StackName=stack_name)
         _wait_stack(cfn, stack_name)
@@ -13623,7 +13625,9 @@ def test_cfn_lambda_permission_rollback_of_a_replacement_removes_the_new_stateme
         cfn.create_stack(StackName=stack_name, TemplateBody=template("s3.amazonaws.com", "S"))
         stack = _wait_stack(cfn, stack_name)
         assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
-        assert {s["Sid"] for s in _lambda_policy_statements(lam, fn_name)} == {"kept", "Perm"}
+        sids = {s["Sid"] for s in _lambda_policy_statements(lam, fn_name)}
+        assert "kept" in sids and len(sids) == 2
+        assert any(s.startswith(f"{stack_name}-Perm-") for s in sids)
 
         cfn.update_stack(StackName=stack_name, TemplateBody=template("events.amazonaws.com", "N"))
         stack = _wait_stack(cfn, stack_name)
@@ -13695,7 +13699,8 @@ def test_cfn_lambda_permission_function_name_change_replaces_the_statement(cfn, 
         cfn.create_stack(StackName=stack_name, TemplateBody=_cfn_permission_template(old_fn))
         stack = _wait_stack(cfn, stack_name)
         assert stack["StackStatus"] == "CREATE_COMPLETE", stack.get("StackStatusReason")
-        assert {s["Sid"] for s in _lambda_policy_statements(lam, old_fn)} == {"Perm"}
+        old_sids = {s["Sid"] for s in _lambda_policy_statements(lam, old_fn)}
+        assert len(old_sids) == 1 and next(iter(old_sids)).startswith(f"{stack_name}-Perm-")
         assert _lambda_policy_statements(lam, new_fn) == []
 
         cfn.update_stack(StackName=stack_name, TemplateBody=_cfn_permission_template(new_fn))
@@ -13704,7 +13709,7 @@ def test_cfn_lambda_permission_function_name_change_replaces_the_statement(cfn, 
         assert _lambda_policy_statements(lam, old_fn) == []
         statements = _lambda_policy_statements(lam, new_fn)
         assert len(statements) == 1
-        assert statements[0]["Sid"] == "Perm"
+        assert statements[0]["Sid"].startswith(f"{stack_name}-Perm-")
         assert statements[0]["Resource"].endswith(f":function:{new_fn}")
     finally:
         _delete_cfn_test_stack(cfn, stack_name)
@@ -13731,7 +13736,7 @@ def test_cfn_lambda_permission_action_change_replaces_the_statement(cfn, lam):
         assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
         statements = _lambda_policy_statements(lam, fn_name)
         assert len(statements) == 1
-        assert statements[0]["Sid"] == "Perm"
+        assert statements[0]["Sid"].startswith(f"{stack_name}-Perm-")
         assert statements[0]["Action"] == "lambda:InvokeFunctionUrl"
     finally:
         _delete_cfn_test_stack(cfn, stack_name)
@@ -13762,7 +13767,7 @@ def test_cfn_lambda_permission_source_account_change_replaces_the_statement(cfn,
         assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
         statements = _lambda_policy_statements(lam, fn_name)
         assert len(statements) == 1
-        assert statements[0]["Sid"] == "Perm"
+        assert statements[0]["Sid"].startswith(f"{stack_name}-Perm-")
         assert statements[0]["Condition"] == {
             "ArnLike": {"AWS:SourceArn": source_arn},
             "StringEquals": {"AWS:SourceAccount": "222222222222"},
@@ -13796,7 +13801,7 @@ def test_cfn_lambda_permission_qualified_arn_update_replaces_on_the_qualified_re
         assert stack["StackStatus"] == "UPDATE_COMPLETE", stack.get("StackStatusReason")
         statements = _lambda_policy_statements(lam, fn_name)
         assert len(statements) == 1
-        assert statements[0]["Sid"] == "Perm"
+        assert statements[0]["Sid"].startswith(f"{stack_name}-Perm-")
         assert statements[0]["Resource"] == alias_arn
         assert "events.amazonaws.com" in json.dumps(statements[0]["Principal"])
         assert _lambda_policy_statements(lam, f"{fn_name}:live") == statements

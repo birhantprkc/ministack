@@ -2675,51 +2675,78 @@ _LAMBDA_PERMISSION_PROPERTIES = (
 )
 
 
-def _lambda_permission_sid(props, logical_id):
-    # ``Id`` is not an AWS property, but templates written against earlier
-    # releases rely on it; otherwise the logical id is the Sid.
-    return props.get("Id") or logical_id or ""
+def _lambda_permission_sids(props, logical_id, physical_id):
+    """The candidate Sids a permission resource may have written.
+
+    An explicit ``Id`` (ministack-legacy property, not on the AWS reference)
+    is the Sid verbatim. Otherwise the Sid is the generated physical id, the
+    shape real CloudFormation mints (``<stack>-<LogicalId>-XXXXXXXX``); the
+    bare logical id is kept as a fallback candidate so stacks persisted by
+    earlier releases (whose default Sid was the logical id) still delete
+    their statement.
+    """
+    if props.get("Id"):
+        return [props["Id"]]
+    return [sid for sid in (physical_id, logical_id) if sid]
 
 
 def _lambda_permission_create(logical_id, props, stack_name):
+    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
     func, func_name, _resource_arn, qualifier = _lambda_function_for_cfn_ref(props.get("FunctionName", ""))
     if func:
-        data = {"StatementId": _lambda_permission_sid(props, logical_id), "Principal": "*"}
+        # Real CloudFormation generates the statement id — it is the
+        # resource's physical id, unique per instance, which is what lets a
+        # replacement's predecessor be deleted by Sid without touching the
+        # successor. ``Id`` overrides it for templates written against
+        # earlier MiniStack releases.
+        data = {"StatementId": props.get("Id") or pid, "Principal": "*"}
         data.update({key: props[key] for key in _LAMBDA_PERMISSION_PROPERTIES if props.get(key) is not None})
         status, _headers, body = _lambda_svc._add_permission(func_name, data, path_qualifier=qualifier)
         if status >= 400:
             raise ValueError(
                 f"AWS::Lambda::Permission AddPermission failed: {body.decode() if isinstance(body, bytes) else body}"
             )
-    pid = f"{stack_name}-{logical_id}-{new_uuid()[:8]}"
     return pid, {}
 
 
-def _lambda_permission_remove_statement(props, sid):
+def _lambda_permission_remove_statement(props, sids):
     func, func_name, _resource_arn, qualifier = _lambda_function_for_cfn_ref(props.get("FunctionName", ""))
     if func:
         # A statement already gone (removed by hand, or the function policy
         # rewritten) is nothing to fail a stack delete over.
-        _lambda_svc._remove_permission(func_name, sid, {}, path_qualifier=qualifier)
+        for sid in sids:
+            _lambda_svc._remove_permission(func_name, sid, {}, path_qualifier=qualifier)
 
 
 def _lambda_permission_update(physical_id, old_props, new_props, stack_name, logical_id=None):
     """Every AWS::Lambda::Permission property requires replacement
     (https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-permission.html),
     so any change is RemovePermission followed by AddPermission under a fresh
-    physical id, as on AWS. Removal goes first: both statements carry the
-    same Sid unless the template's Id changed (the default Sid is the
-    logical id), so the reverse order would remove the statement just added.
+    physical id — and, as on AWS, a fresh generated Sid, so the engine's
+    predecessor cleanup (which deletes by the OLD resource's Sid) and the
+    rollback of a failed later resource (which deletes by the NEW one) each
+    touch only their own statement.
+
+    The one degenerate case is an explicit legacy ``Id`` that both templates
+    share: the Sid then cannot change, so the physical id is kept to suppress
+    the predecessor cleanup that would otherwise strip the statement this
+    update just installed.
     """
-    _lambda_permission_remove_statement(old_props, _lambda_permission_sid(old_props, logical_id))
-    return _lambda_permission_create(logical_id or physical_id, new_props, stack_name)
+    _lambda_permission_remove_statement(
+        old_props, _lambda_permission_sids(old_props, logical_id, physical_id))
+    new_pid, attrs = _lambda_permission_create(logical_id or physical_id, new_props, stack_name)
+    if old_props.get("Id") and old_props.get("Id") == new_props.get("Id"):
+        return physical_id, attrs
+    return new_pid, attrs
 
 
 def _lambda_permission_delete(physical_id, props, logical_id=None):
-    # The Sid defaults to the logical id exactly as in create, so a
-    # permission declared without an Id removes the statement it added —
-    # on stack delete, and on the rollback of a replacement.
-    _lambda_permission_remove_statement(props, _lambda_permission_sid(props, logical_id))
+    # The Sid candidates mirror create exactly (explicit Id, the generated
+    # physical id, or the pre-upgrade logical-id default), so the statement
+    # this resource added is removed — on stack delete, on the engine's
+    # predecessor cleanup after a replacement, and on the rollback of one.
+    _lambda_permission_remove_statement(
+        props, _lambda_permission_sids(props, logical_id, physical_id))
 
 
 # --- Lambda Version ---
