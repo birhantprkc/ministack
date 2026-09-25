@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Lambda — `ReservedConcurrentExecutions=0` disables the function** — a zero reservation was treated as unset, so the function ran unbounded instead of throttling every invoke with `TooManyRequestsException`. Zero now throttles across all executors, the Docker pool, and SQS event source mappings.
 ### Added
 
 - **CloudFormation — AppConfig applications, environments, configuration profiles and deployment strategies update in place** — none of the four had an update handler, so any property change re-ran the create and the resource came back under a new id. The environments, configuration profiles and hosted configuration versions keyed by the old id were orphaned. Each type now updates in place what its resource reference lists as No interruption and replaces on the rest. Contributed by @iot-rocket.
